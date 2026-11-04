@@ -1,0 +1,67 @@
+name: setup-java v5 protected write boundary
+on:
+  pull_request_target:
+    types: [labeled]
+permissions:
+  contents: read
+jobs:
+  boundary:
+    if: github.event.label.name == 'run-setup-java-write-boundary'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Owner-authored protected inert config
+        shell: bash
+        env:
+          SYNTHETIC_CANARY: ${{ secrets.SETUP_JAVA_V5_SYNTHETIC_CANARY }}
+        run: |
+          python3 - <<'PYPRE'
+          import hashlib,json,os,pathlib
+          value=os.environ['SYNTHETIC_CANARY']
+          target=pathlib.Path.home()/'.docker'/'config.json'
+          target.parent.mkdir(parents=True,exist_ok=True)
+          target.write_text(json.dumps({'auths':{'ghcr.io':{'auth':value}}},separators=(',',':'))+'\n')
+          target.chmod(0o600)
+          parsed=json.loads(target.read_text())['auths']['ghcr.io']['auth']
+          print('SJV5_PRE='+json.dumps({'file_present':target.is_file(),'value_length':len(parsed),'value_sha256':hashlib.sha256(parsed.encode()).hexdigest(),'value_hash_matches':hashlib.sha256(parsed.encode()).hexdigest()=='57bb49e5adf0b37fbd09c0e57462270aa24ed12e89414aaa5ec9689290c7c509'},sort_keys=True,separators=(',',':')))
+          PYPRE
+      - name: Checkout lower head as data only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: lower-data
+          persist-credentials: false
+          allow-unsafe-pr-checkout: true
+      - name: Exact current setup-java v5
+        id: setup
+        continue-on-error: true
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+          settings-path: lower-data/settings
+          overwrite-settings: true
+          server-id: owned-inert
+          server-username: OWNED_USER
+          server-password: OWNED_PASS
+          mvn-toolchain-id: owned-toolchain
+          mvn-toolchain-vendor: temurin
+      - name: Sanitized protected effect readback
+        if: always()
+        shell: bash
+        env:
+          SETUP_OUTCOME: ${{ steps.setup.outcome }}
+        run: |
+          python3 - <<'PYPOST'
+          import hashlib,json,os,pathlib,xml.etree.ElementTree as ET
+          target=pathlib.Path.home()/'.docker'/'config.json'
+          raw=target.read_bytes() if target.is_file() else b''
+          try: json.loads(raw); json_valid=True
+          except Exception: json_valid=False
+          try: root=ET.fromstring(raw); xml_valid=True; root_name=root.tag.rsplit('}',1)[-1]
+          except Exception: xml_valid=False; root_name=None
+          link=pathlib.Path('lower-data/settings/settings.xml')
+          result={'setup_outcome':os.environ.get('SETUP_OUTCOME'),'target_present':target.is_file(),'target_sha256':hashlib.sha256(raw).hexdigest(),'target_bytes':len(raw),'docker_json_valid':json_valid,'maven_xml_valid':xml_valid,'xml_root':root_name,'secret_bytes_absent':b'SETUP_JAVA_SECRE' not in raw,'lower_leaf_is_symlink':link.is_symlink(),'leaf_realpath_outside_workspace':not str(link.resolve()).startswith(str(pathlib.Path.cwd().resolve()))}
+          print('SJV5_POST='+json.dumps(result,sort_keys=True,separators=(',',':')))
+          PYPOST
